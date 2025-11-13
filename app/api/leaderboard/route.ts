@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import dbConnect from "@/lib/mongo";
+import connectDB from "@/lib/mongo";
 import User from "@/models/User";
 import Project from "@/models/Project";
 import Quiz from "@/models/Quiz";
+import Certificate from "@/models/Certificate";
 
 export async function GET(req: NextRequest) {
   try {
-    await dbConnect();
+    await connectDB();
 
     const { searchParams } = new URL(req.url);
     const period = searchParams.get("period") || "all"; // all, weekly, monthly
@@ -25,8 +26,7 @@ export async function GET(req: NextRequest) {
 
     // Récupérer tous les utilisateurs avec leurs données
     const users = await User.find({ role: "user", isApproved: true })
-      .populate("certificates")
-      .populate("projectsTaken")
+      .select("firstName lastName email quizzes certificates projectsTaken badges")
       .lean();
 
     const projects = await Project.find().lean();
@@ -100,24 +100,36 @@ export async function GET(req: NextRequest) {
         totalPoints = quizPoints + projectPoints + formationPoints;
       }
 
-      // 🏆 Attribution des badges
+      // 🏆 Attribution des badges automatiques
       const completedProjects = userProjects.filter((p: any) => p.status === "terminé").length;
       const passedQuizzes = user.quizzes?.filter((q: any) => {
         const quiz = quizzes.find((qz: any) => String(qz._id) === String(q.quiz));
         return q.score >= (quiz?.passingScore || 50);
       }).length || 0;
 
-      if (completedProjects >= 10) badges.push("🏆 Master des Projets");
-      else if (completedProjects >= 5) badges.push("⭐ Expert Projet");
-      else if (completedProjects >= 1) badges.push("🌟 Débutant Projet");
+      // Badges automatiques basés sur les performances
+      const autoBadges: string[] = [];
+      if (completedProjects >= 10) autoBadges.push("🏆 Master des Projets");
+      else if (completedProjects >= 5) autoBadges.push("⭐ Expert Projet");
+      else if (completedProjects >= 1) autoBadges.push("🌟 Débutant Projet");
 
-      if (passedQuizzes >= 20) badges.push("🎓 Génie des Quiz");
-      else if (passedQuizzes >= 10) badges.push("📚 Expert Quiz");
-      else if (passedQuizzes >= 5) badges.push("📖 Amateur Quiz");
+      if (passedQuizzes >= 20) autoBadges.push("🎓 Génie des Quiz");
+      else if (passedQuizzes >= 10) autoBadges.push("📚 Expert Quiz");
+      else if (passedQuizzes >= 5) autoBadges.push("📖 Amateur Quiz");
 
-      if (user.certificates?.length >= 5) badges.push("🎖️ Collectionneur de Certificats");
-      if (totalPoints >= 5000) badges.push("💎 Légende");
-      else if (totalPoints >= 2000) badges.push("🔥 Champion");
+      if (user.certificates?.length >= 5) autoBadges.push("🎖️ Collectionneur de Certificats");
+      if (totalPoints >= 5000) autoBadges.push("💎 Légende");
+      else if (totalPoints >= 2000) autoBadges.push("🔥 Champion");
+
+      // Combiner les badges manuels (déjà dans la DB) avec les badges automatiques
+      const manualBadges = user.badges || [];
+      const allBadges = [...new Set([...manualBadges, ...autoBadges])]; // Supprimer les doublons
+      badges.push(...allBadges);
+
+      // Log pour déboguer
+      if (manualBadges.length > 0) {
+        console.log(`🎖️ [LEADERBOARD] ${user.firstName} ${user.lastName}: badges manuels=${manualBadges.length}, auto=${autoBadges.length}, total=${allBadges.length}`);
+      }
 
       return {
         userId: user._id,
@@ -144,6 +156,9 @@ export async function GET(req: NextRequest) {
       rank: index + 1,
     }));
 
+    // 💾 Mettre à jour le classement dans la base de données
+    await updateLeaderboardInDatabase(rankedData, period, category);
+
     // Trouver le classement de l'utilisateur connecté
     let currentUserRank = null;
     if (currentUserId) {
@@ -166,6 +181,59 @@ export async function GET(req: NextRequest) {
       { success: false, error: "Erreur lors de la récupération du classement" },
       { status: 500 }
     );
+  }
+}
+
+/**
+ * 💾 Fonction pour mettre à jour le classement dans la base de données
+ */
+async function updateLeaderboardInDatabase(
+  rankedData: any[],
+  period: string,
+  category: string
+) {
+  try {
+    // Mettre à jour chaque utilisateur avec son classement
+    const updatePromises = rankedData.map(async (userData) => {
+      const updateFields: any = {
+        "leaderboardStats.lastUpdated": new Date(),
+      };
+
+      // Mise à jour selon la catégorie
+      if (category === "all") {
+        updateFields["leaderboardStats.globalRank"] = userData.rank;
+        updateFields["leaderboardStats.globalPoints"] = userData.totalPoints;
+      } else if (category === "quiz") {
+        updateFields["leaderboardStats.quizRank"] = userData.rank;
+        updateFields["leaderboardStats.quizPoints"] = userData.totalPoints;
+      } else if (category === "projects") {
+        updateFields["leaderboardStats.projectRank"] = userData.rank;
+        updateFields["leaderboardStats.projectPoints"] = userData.totalPoints;
+      } else if (category === "formations") {
+        updateFields["leaderboardStats.formationRank"] = userData.rank;
+        updateFields["leaderboardStats.formationPoints"] = userData.totalPoints;
+      }
+
+      // Mise à jour selon la période
+      if (period === "weekly") {
+        updateFields["leaderboardStats.weeklyRank"] = userData.rank;
+        updateFields["leaderboardStats.weeklyPoints"] = userData.totalPoints;
+      } else if (period === "monthly") {
+        updateFields["leaderboardStats.monthlyRank"] = userData.rank;
+        updateFields["leaderboardStats.monthlyPoints"] = userData.totalPoints;
+      }
+
+      // ⚠️ NE PAS écraser les badges manuels ajoutés par l'admin
+      // Les badges sont déjà combinés (manuels + automatiques) dans userData.badges
+      // mais on ne les sauvegarde pas dans la DB pour préserver les badges manuels
+
+      return User.findByIdAndUpdate(userData.userId, { $set: updateFields });
+    });
+
+    await Promise.all(updatePromises);
+    console.log(`✅ Classement mis à jour pour ${rankedData.length} utilisateurs (${period}, ${category})`);
+  } catch (error) {
+    console.error("❌ Erreur lors de la mise à jour du classement:", error);
   }
 }
 

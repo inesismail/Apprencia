@@ -32,3 +32,7 @@ public/uploads/*.mp4
 public/uploads/*.mov
 public/uploads/*.avi
 public/uploads/*.mkv
+
+# documentation (ne pas commiter)
+/docs/
+docs/

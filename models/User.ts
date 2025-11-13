@@ -34,6 +34,30 @@ const userSchema = new mongoose.Schema(
     // 🏆 Système de points pour le leaderboard
     points: { type: Number, default: 0 },
     badges: [{ type: String }], // Badges obtenus par l'utilisateur
+
+    // 📊 Classement détaillé par catégorie et période
+    leaderboardStats: {
+      // Classement global
+      globalRank: { type: Number, default: null },
+      globalPoints: { type: Number, default: 0 },
+
+      // Classement par catégorie
+      quizRank: { type: Number, default: null },
+      quizPoints: { type: Number, default: 0 },
+      projectRank: { type: Number, default: null },
+      projectPoints: { type: Number, default: 0 },
+      formationRank: { type: Number, default: null },
+      formationPoints: { type: Number, default: 0 },
+
+      // Classement par période
+      weeklyRank: { type: Number, default: null },
+      weeklyPoints: { type: Number, default: 0 },
+      monthlyRank: { type: Number, default: null },
+      monthlyPoints: { type: Number, default: 0 },
+
+      // Date de dernière mise à jour
+      lastUpdated: { type: Date, default: Date.now },
+    },
   },
   {
     timestamps: true,
